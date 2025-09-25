@@ -8,10 +8,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-from pydub import AudioSegment
-from pydub.utils import make_chunks
-from IPython.display import Audio
-
 import librosa
 import librosa.display
 import matplotlib.pyplot as plt
@@ -22,7 +18,6 @@ from tensorflow.keras.models import Model
 from tensorflow.keras import backend as K
 
 from sklearn.metrics import f1_score, classification_report
-from scipy.sparse import lil_matrix
 from sklearn.utils.class_weight import compute_class_weight
 
 # GPU配置
@@ -168,8 +163,8 @@ MAX_TIME_STEPS = 65
 N_FEATURES = 120  # 40 MFCC + 40 delta + 40 delta2
 
 # 主数据加载路径配置
-train_dir = './dataset/whole_dataset/train_val/train_data'
-val_dir = './dataset/whole_dataset/train_val/validation_data'
+train_dir = './xeno_dataset/whole_dataset/train_val/train_data'
+val_dir = './xeno_dataset/whole_dataset/train_val/validation_data'
 
 # 加载训练和验证数据
 print("=== 加载数据集 ===")
@@ -488,17 +483,15 @@ print("\n=== 详细分类报告 ===")
 print(classification_report(y_prediction_processed, y_pred_classes, target_names=target_names))
 
 # 计算F1分数
-from sklearn.metrics import f1_score
-
 f1 = f1_score(y_prediction_processed, y_pred_classes, average='weighted')
 print(f"\n加权平均F1分数: {f1:.4f}")
 
 # 保存模型和配置
 print("\n=== 保存模型和配置 ===")
-model.save('improved_cnn_lstm_model.keras')
+model.save('single_label_cnn_lstm_model.keras')
 
 config = {
-    "model_type": "Improved CNN-LSTM with Attention",
+    "model_type": "Single Label CNN-LSTM with Attention",
     "cls_label": cls_label,
     "num_classes": NUM_CLASSES,
     "max_time_steps": MAX_TIME_STEPS,
@@ -519,183 +512,18 @@ config = {
 
 import json
 
-with open('improved_cnn_lstm_config.json', 'w', encoding='utf-8') as f:
+with open('single_label_cnn_lstm_config.json', 'w', encoding='utf-8') as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
 
-print("改进的CNN-LSTM模型训练完成！")
+print("单标签CNN-LSTM模型训练完成！")
 print(f"最终验证准确率: {prediction_accuracy:.4f}")
 print(f"最终F1分数: {f1:.4f}")
-print("模型已保存到: improved_cnn_lstm_model.keras")
-print("配置已保存到: improved_cnn_lstm_config.json")
-
-
-# ====================== 以下保持原有的预测代码不变 ======================
-
-# 多标签预测部分的函数定义保持不变
-def get_class_labels(r):
-    x = r['class_name']
-    label_names = x.split('_')
-
-    label_nums = []
-    for l in label_names:
-        if l in cls_label:
-            indx = cls_label[l]
-            label_nums.append(indx)
-
-    return label_nums
-
-
-def label_to_sm(labels, n_classes):
-    sm = lil_matrix((len(labels), n_classes))
-    for i, label in enumerate(labels):
-        sm[i, label] = 1
-    return sm
-
-
-def get_f1_score_multilabel(y_true, y_pred):
-    y_true_sm = label_to_sm(labels=y_true, n_classes=NUM_CLASSES)
-    y_pred_sm = label_to_sm(labels=y_pred, n_classes=NUM_CLASSES)
-    metric = f1_score(y_true=y_true_sm, y_pred=y_pred_sm, average='weighted')
-    return metric
-
-
-def get_sm(y_true, y_pred):
-    y_true_sm = label_to_sm(labels=y_true, n_classes=NUM_CLASSES)
-    y_pred_sm = label_to_sm(labels=y_pred, n_classes=NUM_CLASSES)
-    return y_true_sm, y_pred_sm
-
-
-def get_split(path):
-    myaudio = AudioSegment.from_file(path, "wav")
-    chunk_length_ms = 1500  # pydub calculates in millisec
-    chunks = make_chunks(myaudio, chunk_length_ms)  # Make chunks of 1.5 sec
-
-    paths = []
-    for i, chunk in enumerate(chunks):
-        chunk_name = f"chunk{i}.wav"
-        paths.append(chunk_name)
-        chunk.export(chunk_name, format="wav")
-
-    return paths
-
-
-def get_mfcc_for_prediction(path):
-    """用于预测的MFCC提取函数，与训练保持一致"""
-    mfcc = get_mfcc_enhanced(path, None, is_training=False, augment_prob=0.0)
-    if mfcc is not None:
-        # 调整到固定大小
-        if mfcc.shape[0] < MAX_TIME_STEPS:
-            pad_width = MAX_TIME_STEPS - mfcc.shape[0]
-            mfcc = np.pad(mfcc, ((0, pad_width), (0, 0)), mode='constant')
-        elif mfcc.shape[0] > MAX_TIME_STEPS:
-            mfcc = mfcc[:MAX_TIME_STEPS, :]
-
-        if mfcc.shape[1] != N_FEATURES:
-            mfcc = np.resize(mfcc, (MAX_TIME_STEPS, N_FEATURES))
-
-        # 标准化
-        mfcc = (mfcc - mean) / std
-
-        return mfcc
-    return np.zeros((MAX_TIME_STEPS, N_FEATURES))
-
-
-def get_xqs(paths):
-    xqs = []
-    for i in range(min(6, len(paths))):  # only using first 6 chunks
-        t = get_mfcc_for_prediction(paths[i])
-        xqs.append(t)
-    return xqs
-
-
-def get_probs(model, xqs):
-    probs = []
-    for xq in xqs:
-        xq = xq.reshape((1, MAX_TIME_STEPS, N_FEATURES))
-        p = model.predict(xq, verbose=0)
-        probs.append(p)
-    return np.array(probs)
-
-
-def predict(model, xqs, num_species):
-    probs = get_probs(model, xqs)
-    # aggregate
-    s = np.max(probs, axis=0)
-    if num_species == 2:
-        n = 2
-    else:
-        n = 3
-    labels = np.argsort(s[0])[::-1][:n]
-    return list(labels)
-
-
-def prediction(model, df, num_species):
-    y_true = list(df['class_label'])
-    y_pred = []
-    for i in tqdm(range(len(df))):
-        path = df['path'].iloc[i]
-        chunk_paths = get_split(path)
-        xqs = get_xqs(chunk_paths)
-        label = predict(model, xqs, num_species)
-        y_pred.append(label)
-        # 清理临时文件
-        for chunk_path in chunk_paths:
-            if os.path.exists(chunk_path):
-                os.remove(chunk_path)
-    return y_true, y_pred
-
-
-def evaluate(model, df_mix_2, df_mix_3):
-    y_true_2, y_pred_2 = prediction(model, df_mix_2, 2)
-    y_true_3, y_pred_3 = prediction(model, df_mix_3, 3)
-
-    y_true = y_true_2 + y_true_3
-    y_pred = y_pred_2 + y_pred_3
-    score = get_f1_score_multilabel(y_true, y_pred)
-
-    return y_true, y_pred, score
-
-
-# 加载混合数据集进行评估（如果存在）
-# 2种鸟类混合数据集
-mix_2_dir = './dataset/whole_dataset/mix_2'
-if os.path.exists(mix_2_dir):
-    df_mix_2 = load_dataset(mix_2_dir, "混合2种")
-    df_mix_2['class_label'] = df_mix_2.apply(get_class_labels, axis=1)
-    print(f"混合2种数据集: {df_mix_2.shape}")
-
-    # 3种鸟类混合数据集  
-    mix_3_dir = './dataset/whole_dataset/mix_3'
-    if os.path.exists(mix_3_dir):
-        df_mix_3 = load_dataset(mix_3_dir, "混合3种")
-        df_mix_3['class_label'] = df_mix_3.apply(get_class_labels, axis=1)
-        print(f"混合3种数据集: {df_mix_3.shape}")
-
-        # 评估混合数据集
-        print("\n=== 评估混合数据集 ===")
-        y_true, y_pred, score = evaluate(model, df_mix_2, df_mix_3)
-        print(f"混合数据集F1分数: {score:.4f}")
-
-        # 详细分类报告
-        y_true_sm, y_pred_sm = get_sm(y_true, y_pred)
-        print("\n混合数据集分类报告:")
-        print(classification_report(y_true_sm, y_pred_sm))
-
-print("\n=== 改进的CNN-LSTM模型完成 ===")
-print("主要改进点:")
-print("1. 数据增强 - 时间拉伸、音调变换、噪声添加等")
-print("2. 特征工程 - MFCC + Delta + Delta2 特征")
-print("3. 数据平衡 - 自动处理类别不平衡")
-print("4. 正则化 - BatchNormalization + Dropout")
-print("5. 类别加权 - 处理类别不平衡")
-print("6. 早停和学习率调度 - 防止过拟合")
-print("7. 特征标准化 - 提高训练稳定性")
-print("8. 保持原有模型架构 - CNN + LSTM + Attention")
+print("模型已保存到: single_label_cnn_lstm_model.keras")
+print("配置已保存到: single_label_cnn_lstm_config.json")
 
 # 清理临时变量和释放内存
 del X_train_processed, X_prediction_processed, temp
 import gc
-
 gc.collect()
 
 print("\n训练完成，内存已清理")
